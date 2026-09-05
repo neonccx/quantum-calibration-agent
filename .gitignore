@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-terminal/
+runs/
+models/
+.DS_Store
+
+# Local deployment and superseded verification history (may contain private host paths)
+docs/*_zh.md
+docs/verification_*.md
+docs/cli_studio02_*.md
+docs/iq_report_research_*.md
+docs/performance_*.md
+docs/simulation_acceptance_*.md
+docs/archive/

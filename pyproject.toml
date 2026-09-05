@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantum-calibration-agent"
+version = "0.4.0"
+description = "Simulation-first single-qubit calibration agent runtime"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "scipy>=1.12"]
+
+[project.optional-dependencies]
+terminal = ["rich>=13.9,<16", "prompt-toolkit>=3.0.43,<4"]
+report = ["matplotlib>=3.9,<4"]
+validation = ["qutip>=5.2,<6"]
+model = ["torch>=2.5", "transformers>=4.45,<5", "peft>=0.13", "accelerate>=1"]
+qcaleval = ["datasets==4.5.0", "huggingface-hub==1.9.0", "Pillow==12.1.1"]
+
+[project.scripts]
+qm-agent = "qmagent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

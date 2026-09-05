@@ -1,0 +1,16 @@
+#!/bin/sh
+# Project-local entry: no installation of system commands or shell profile edits.
+set -eu
+QCAL_AGENT_ROOT=$(CDPATH= cd "$(dirname "$0")" && pwd)
+export QM_AGENT_HOME="${QM_AGENT_HOME:-$QCAL_AGENT_ROOT/runs/terminal}"
+export PYTHONPATH="$QCAL_AGENT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+QCAL_H100_LAUNCHER="$QCAL_AGENT_ROOT/../Nanbeige4.2-3B/deploy/h100-python.sh"
+if [ -n "${QCAL_PYTHON:-}" ]; then
+    exec "$QCAL_PYTHON" -m qmagent "$@"
+elif [ -f "$QCAL_H100_LAUNCHER" ] && [ -x /home/caochuangxin/bishe/envs/nanbeige445/bin/python ]; then
+    exec sh "$QCAL_H100_LAUNCHER" -m qmagent "$@"
+elif [ -x "$QCAL_AGENT_ROOT/.venv-terminal/bin/python" ]; then
+    exec "$QCAL_AGENT_ROOT/.venv-terminal/bin/python" -m qmagent "$@"
+else
+    exec python3 -m qmagent "$@"
+fi
