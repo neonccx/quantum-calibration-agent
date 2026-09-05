@@ -66,11 +66,25 @@ evaluate F0/F1, visibility and assignment fidelity. Two independent passing batc
 settings are required. The maximum-visibility threshold is diagnostic only. Wilson intervals are
 reported, but do not silently change the acceptance gate. Gaussian overlap is not SPAM-corrected fidelity.
 
+## Recorded simulation acceptance
+
+The verified fit-update policy accepted all three fresh-seed simulation episodes in nine experiments
+each. The figure below was regenerated from the saved final IQ acquisition for one episode; its
+recomputed gate was required to match the original controller result before export. It is simulation
+evidence, not a hardware measurement.
+
+![Six-panel held-out IQ discrimination report](docs/assets/evaluation_20260905/iq_report.png)
+
+For this episode: F0 = 0.9980, F1 = 0.9766, visibility = 0.9746, assignment fidelity = 0.9873 and
+SNR amplitude = 3.51. The exact machine-readable values and confidence intervals are preserved in
+[`iq_metrics.json`](docs/assets/evaluation_20260905/iq_metrics.json).
+
 ## Data and verification
 
 - [Training project](https://github.com/neonccx/nanbeige-calibration-sft): v2 data, frozen baselines and LoRA training.
 - [Research basis](docs/research.md): formulas, validation boundary and QMClaw adoption decisions.
 - [Fit-update protocol](docs/FIT_UPDATE_PROTOCOL.md): deterministic fit arithmetic and model/tool boundary.
+- [Simulation evidence](docs/SIMULATION_EVIDENCE.md): fresh-seed closed-loop results and IQ figure provenance.
 - [QCalEval protocol](docs/QCALEVAL_PROTOCOL.md): pinned visual benchmark snapshots and honest partial scoring.
 - [Prompt ablation](docs/PROMPT_ABLATION.md): controlled B0/B1/F0/F1 instruction comparison.
 - [Historical README](docs/archive/README_before_v04.md): preserved deployment history, not current behavior.
