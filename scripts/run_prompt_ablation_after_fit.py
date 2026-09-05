@@ -27,10 +27,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=2026090500)
     parser.add_argument("--episodes", type=int, default=3)
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume a failed ordered run without overwriting completed artifacts")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    args.output.mkdir(parents=True, exist_ok=False)
-    state = {
+    args.output.mkdir(parents=True, exist_ok=args.resume)
+    initial_state = {
         "pid": os.getpid(),
         "status": "waiting_for_ordered_jobs",
         "prompt_profile": "minimal",
@@ -41,6 +43,15 @@ def main():
         },
         "stages": [],
     }
+    if args.resume:
+        state = json.loads((args.output / "status.json").read_text())
+        if state.get("status") != "failed":
+            raise ValueError("Only a failed prompt-ablation run can be resumed")
+        state["resume_source_sha256"] = initial_state["source_sha256"]
+        state["resumed"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        state.pop("error", None)
+    else:
+        state = initial_state
 
     def save():
         temporary = args.output / "status.json.tmp"
@@ -53,13 +64,22 @@ def main():
         state["status"] = "running"
         state["current_stage"] = name
         save()
-        with (args.output / f"{name}.log").open("x") as log:
+        log_path = args.output / f"{name}.log"
+        if log_path.exists():
+            index = 1
+            while (args.output / f"{name}.resume{index}.log").exists():
+                index += 1
+            log_path = args.output / f"{name}.resume{index}.log"
+        with log_path.open("x") as log:
             code = subprocess.run(list(map(str, command)), cwd=cwd or root, env=environment,
                                   stdout=log, stderr=subprocess.STDOUT).returncode
         item.update(returncode=code, finished=datetime.datetime.now(datetime.timezone.utc).isoformat())
         save()
         if code and not allowed_failure:
             raise RuntimeError(f"stage {name} failed: {code}")
+
+    def completed(name):
+        return any(item.get("name") == name and item.get("returncode") == 0 for item in state["stages"])
 
     save()
     try:
@@ -85,30 +105,38 @@ def main():
             for arm in ("base", "sft"):
                 output = args.output / f"{split}_{arm}"
                 extra = ["--adapter", args.adapter] if arm == "sft" else []
-                run(f"{split}_{arm}", launcher + [root / "scripts/evaluate_policy_v2.py",
-                    "--model", args.model, "--trust-remote-code", "--prompt-profile", "minimal",
-                    "--test-file", args.dataset / f"{split}.jsonl", "--output", output] + extra)
-                run(f"{split}_{arm}_controller", launcher + [root / "scripts/score_policy_predictions.py",
-                    "--test-file", args.dataset / f"{split}.jsonl", "--predictions", output / "predictions.jsonl",
-                    "--output", output / "controller_score.json"])
-            run(f"{split}_base_prompt_comparison", launcher + [root / "scripts/compare_policy_v2.py",
-                "--baseline", args.skill_results / f"{split}_base", "--adapted", args.output / f"{split}_base",
-                "--output", args.output / f"{split}_base_prompt_comparison.json"])
-            run(f"{split}_sft_prompt_comparison", launcher + [root / "scripts/compare_policy_v2.py",
-                "--baseline", args.skill_results / f"{split}_sft", "--adapted", args.output / f"{split}_sft",
-                "--output", args.output / f"{split}_sft_prompt_comparison.json"])
-            run(f"{split}_minimal_training_comparison", launcher + [root / "scripts/compare_policy_v2.py",
-                "--baseline", args.output / f"{split}_base", "--adapted", args.output / f"{split}_sft",
-                "--output", args.output / f"{split}_minimal_training_comparison.json"])
+                if not completed(f"{split}_{arm}"):
+                    run(f"{split}_{arm}", launcher + [root / "scripts/evaluate_policy_v2.py",
+                        "--model", args.model, "--trust-remote-code", "--prompt-profile", "minimal",
+                        "--test-file", args.dataset / f"{split}.jsonl", "--output", output] + extra)
+                if not completed(f"{split}_{arm}_controller"):
+                    run(f"{split}_{arm}_controller", launcher + [root / "scripts/score_policy_predictions.py",
+                        "--test-file", args.dataset / f"{split}.jsonl", "--predictions", output / "predictions.jsonl",
+                        "--output", output / "controller_score.json"])
+            if not completed(f"{split}_base_prompt_comparison"):
+                run(f"{split}_base_prompt_comparison", launcher + [root / "scripts/compare_policy_v2.py",
+                    "--comparison", "prompt", "--baseline", args.skill_results / f"{split}_base",
+                    "--adapted", args.output / f"{split}_base",
+                    "--output", args.output / f"{split}_base_prompt_comparison.json"])
+            if not completed(f"{split}_sft_prompt_comparison"):
+                run(f"{split}_sft_prompt_comparison", launcher + [root / "scripts/compare_policy_v2.py",
+                    "--comparison", "prompt", "--baseline", args.skill_results / f"{split}_sft",
+                    "--adapted", args.output / f"{split}_sft",
+                    "--output", args.output / f"{split}_sft_prompt_comparison.json"])
+            if not completed(f"{split}_minimal_training_comparison"):
+                run(f"{split}_minimal_training_comparison", launcher + [root / "scripts/compare_policy_v2.py",
+                    "--baseline", args.output / f"{split}_base", "--adapted", args.output / f"{split}_sft",
+                    "--output", args.output / f"{split}_minimal_training_comparison.json"])
 
         for arm in ("base", "sft"):
             extra = ["--adapter", args.adapter] if arm == "sft" else []
-            run(f"fresh_{arm}", launcher + ["-m", "qmagent.cli", "run", "--policy", "hf",
-                "--decode-backend", "hf", "--prompt-profile", "minimal", "--model", args.model,
-                "--trust-remote-code", "--backend", "physical", "--seed", args.seed,
-                "--episodes", args.episodes, "--request-timeout", "300", "--max-steps", "30",
-                "--max-tool-calls", "8", "--output-dir", args.output / f"fresh_{arm}"] + extra,
-                allowed_failure=True, cwd=root)
+            if not completed(f"fresh_{arm}"):
+                run(f"fresh_{arm}", launcher + ["-m", "qmagent.cli", "run", "--policy", "hf",
+                    "--decode-backend", "hf", "--prompt-profile", "minimal", "--model", args.model,
+                    "--trust-remote-code", "--backend", "physical", "--seed", args.seed,
+                    "--episodes", args.episodes, "--request-timeout", "300", "--max-steps", "30",
+                    "--max-tool-calls", "8", "--output-dir", args.output / f"fresh_{arm}"] + extra,
+                    allowed_failure=True, cwd=root)
         state["status"] = "completed_with_failures" if any(item["returncode"] for item in state["stages"]) else "completed"
     except BaseException as exc:
         state.update(status="failed", error=f"{type(exc).__name__}: {exc}")

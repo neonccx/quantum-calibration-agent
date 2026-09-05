@@ -43,3 +43,23 @@ class ComparisonTests(unittest.TestCase):
         path.write_text(json.dumps(config))
         with self.assertRaisesRegex(ValueError, "test_sha256"):
             comparison.compare(self.before, self.after)
+
+    def test_prompt_only_comparison_requires_same_adapter_and_profiles(self):
+        for directory, profile, prompt_hash in ((self.before, "skill", "full"),
+                                                 (self.after, "minimal", "short")):
+            config = json.loads((directory/"config.json").read_text())
+            config.update(adapter="same-adapter", prompt_profile=profile,
+                          system_prompt_sha256=prompt_hash)
+            (directory/"config.json").write_text(json.dumps(config))
+        report = comparison.compare(self.before, self.after, comparison="prompt")
+        self.assertEqual(report["comparison"]["dimension"], "system_prompt")
+        self.assertEqual(report["comparison"]["baseline_profile"], "skill")
+        self.assertEqual(report["comparison"]["candidate_profile"], "minimal")
+
+    def test_prompt_comparison_rejects_changed_weights(self):
+        for directory, profile in ((self.before, "skill"), (self.after, "minimal")):
+            config = json.loads((directory/"config.json").read_text())
+            config.update(prompt_profile=profile, system_prompt_sha256=profile)
+            (directory/"config.json").write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "identical checkpoint/adapter"):
+            comparison.compare(self.before, self.after, comparison="prompt")

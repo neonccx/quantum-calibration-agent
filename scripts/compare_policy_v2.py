@@ -26,14 +26,37 @@ def read_evaluation(directory):
     return config, indexed
 
 
-def compare(baseline, adapted):
+def compare(baseline, adapted, *, comparison="weights"):
     before, a = read_evaluation(baseline)
     after, b = read_evaluation(adapted)
     for key in ("protocol", "model", "test_sha256", "tokenizer_sha256", "selected_ids"):
         if before.get(key) != after.get(key) or key not in before:
             raise ValueError(f"Unmatched comparison input: {key}")
-    if before.get("adapter") is not None or not after.get("adapter"):
-        raise ValueError("Expected an unmodified baseline and an explicit adapted checkpoint")
+    if comparison == "weights":
+        if before.get("adapter") is not None or not after.get("adapter"):
+            raise ValueError("Expected an unmodified baseline and an explicit adapted checkpoint")
+        comparison_metadata = {"dimension": "weights", "baseline_adapter": None,
+                               "candidate_adapter": after["adapter"]}
+    elif comparison == "prompt":
+        if before.get("adapter") != after.get("adapter"):
+            raise ValueError("Prompt comparison requires identical checkpoint/adapter")
+        before_profile = before.get("prompt_profile") or "skill"
+        after_profile = after.get("prompt_profile")
+        if before_profile != "skill" or after_profile != "minimal":
+            raise ValueError("Expected skill-to-minimal prompt comparison")
+        if not after.get("system_prompt_sha256"):
+            raise ValueError("Minimal prompt hash is missing")
+        comparison_metadata = {
+            "dimension": "system_prompt",
+            "baseline_profile": before_profile,
+            "candidate_profile": after_profile,
+            "baseline_system_prompt_sha256": before.get("system_prompt_sha256"),
+            "candidate_system_prompt_sha256": after["system_prompt_sha256"],
+            "baseline_hash_note": "Legacy skill evaluation predates explicit prompt hashing"
+                if before.get("system_prompt_sha256") is None else None,
+        }
+    else:
+        raise ValueError(f"Unknown comparison dimension: {comparison}")
     ids = before["selected_ids"]
     for identity in ids:
         if a[identity]["expected"] != b[identity]["expected"]:
@@ -53,6 +76,7 @@ def compare(baseline, adapted):
             baseline_correct=sum(a[i]["next_tool_correct"] for i in group),
             adapted_correct=sum(b[i]["next_tool_correct"] for i in group))
     return dict(scope="Paired frozen-context diagnostic; does not measure closed-loop acceptance",
+                comparison=comparison_metadata,
                 sample_count=len(ids), adapter=after["adapter"], metrics=metrics, by_action=by_action,
                 test_sha256=before["test_sha256"],
                 input_sha256={f"{arm}/{name}": hashlib.sha256((directory/name).read_bytes()).hexdigest()
@@ -65,8 +89,9 @@ def main():
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--adapted", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--comparison", choices=("weights", "prompt"), default="weights")
     args = parser.parse_args()
-    report = compare(args.baseline, args.adapted)
+    report = compare(args.baseline, args.adapted, comparison=args.comparison)
     with args.output.open("x") as stream:
         json.dump(report, stream, indent=2, allow_nan=False)
         stream.write("\n")
