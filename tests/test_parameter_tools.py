@@ -18,3 +18,13 @@ class ParameterToolTests(unittest.TestCase):
             calculate_fit_updates(observation, {})
         observation["quality"]["reliable"] = True
         self.assertEqual(calculate_fit_updates(observation, {})["updates"]["relaxation_delay_us"], 125.)
+
+    def test_zpa2d_fit_commits_bias_and_readout(self):
+        observation = {"tool": "sq.s21_zpa2d", "quality": {"reliable": True},
+                       "current_parameters": {"z_bias": 0.0, "readout_frequency_hz": 6.5e9},
+                       "fit_result": {"sweet_spot_zpa": -0.037,
+                                      "readout_frequency_hz": 6.4991e9}}
+        result = calculate_fit_updates(observation, observation["current_parameters"])
+        self.assertEqual(result["updates"], {"z_bias": -0.037,
+                                             "readout_frequency_hz": 6.4991e9})
+        self.assertEqual(result["version"], "0.2")

@@ -2,9 +2,10 @@
 
 ## Scope
 
-This evidence uses the reduced-cQED synthetic backend. It demonstrates that the typed Agent,
-registered fit-update tool, deterministic controller and frozen Nanbeige LoRA policy can execute the
-complete seven-stage workflow. It does not establish performance on a physical device.
+This preserved v2 evidence uses the reduced-cQED synthetic backend. It demonstrates that the typed
+Agent, registered fit-update tool, deterministic controller and frozen Nanbeige LoRA policy can
+execute the former seven-stage workflow. It predates v3 ZPA2D/XEB and does not establish performance
+on a physical device.
 
 ## Fresh-seed result
 

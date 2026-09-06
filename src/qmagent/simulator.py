@@ -11,6 +11,7 @@ import numpy as np
 from scipy.optimize import curve_fit
 
 from .contracts import IQ_THRESHOLDS, TOOLS
+from .physics import flux_transmon_frequency, dispersive_shift_hz
 
 
 def r2(y: np.ndarray, prediction: np.ndarray) -> float:
@@ -68,7 +69,17 @@ class AnalyticSimulator:
             "t1": self.rng.uniform(25, 45), "t2": self.rng.uniform(15, 25),
             "echo": self.rng.uniform(30, 50), "angle": self.rng.uniform(-np.pi, np.pi),
             "readout_optimum": self.rng.uniform(0.45, 0.65),
+            "sweet_zpa": self.rng.uniform(-.12, .12), "flux_period_zpa": self.rng.uniform(.82, 1.12),
+            "junction_asymmetry": self.rng.uniform(.08, .22), "ec_hz": self.rng.uniform(210e6, 260e6),
+            "g_hz": self.rng.uniform(95e6, 115e6), "anh_hz": -250e6,
+            "xeb_cycle_fidelity": self.rng.uniform(.988, .997), "xeb_spam": self.rng.uniform(.015, .045),
         }
+        self._truth["ej_sum_hz"] = (self._truth["fq"]+self._truth["ec_hz"])**2/(8*self._truth["ec_hz"])
+
+    def _fq(self, state):
+        t = self._truth
+        return float(flux_transmon_frequency(state["z_bias"], t["sweet_zpa"], t["flux_period_zpa"],
+            t["ej_sum_hz"], t["ec_hz"], t["junction_asymmetry"]))
 
     def checkpoint(self) -> dict:
         return copy.deepcopy(self.rng.bit_generator.state)
@@ -84,14 +95,18 @@ class AnalyticSimulator:
             raise ValueError("Unregistered simulator tool")
         obs = {"tool": tool, "current_parameters": copy.deepcopy(state),
                "scan": copy.deepcopy(scan), "synthetic": True, "backend": self.backend_name}
-        if tool in TOOLS[:2]:
+        if tool in ("sq.s21", "sq.spectroscopy"):
             self._spectroscopy(obs, state, scan)
+        elif tool == "sq.s21_zpa2d":
+            self._zpa2d(obs, state, scan)
         elif tool == "sq.piamp":
             self._rabi(obs, state, scan)
         elif tool == "sq.ramsey_df":
             self._ramsey(obs, state, scan)
         elif tool in ("sq.t1", "sq.t2_echo"):
             self._decay(obs, state, scan)
+        elif tool == "sq.xeb":
+            self._xeb(obs, state, scan)
         else:
             self._iq(obs, state, scan)
         return obs
@@ -123,7 +138,12 @@ class AnalyticSimulator:
         span = scan.get("frequency_span_hz", 40e6 if resonator else 100e6)
         x = np.linspace(center - span / 2, center + span / 2, 241)
         xm = (x - center) / 1e6
-        truth_center = self._truth["fr" if resonator else "fq"]
+        if resonator:
+            fq = self._fq(state)
+            truth_center = self._truth["fr"]+dispersive_shift_hz(
+                fq, self._truth["fr"], self._truth["g_hz"], self._truth["anh_hz"])
+        else:
+            truth_center = self._fq(state)
         width = 2e6 if resonator else 3e6
         sign = -1 if resonator else 1
         signal = 0.5 + sign * 0.4 / (1 + (2 * (x - truth_center) / width) ** 2)
@@ -145,9 +165,48 @@ class AnalyticSimulator:
             f["edge_hit"] = abs(f["frequency_hz"] - center) > 0.42 * span
             obs["quality"]["reliable"] &= not f["edge_hit"]
 
+    def _zpa2d(self, obs: dict, state: dict, scan: dict) -> None:
+        center = scan.get("frequency_center_hz", state["readout_frequency_hz"])
+        span = scan.get("frequency_span_hz", 40e6)
+        frequency = np.linspace(center-span/2, center+span/2, scan.get("frequency_points", 241))
+        z_center, z_span = scan.get("zpa_center", state["z_bias"]), scan.get("zpa_span", 1.0)
+        zpa = np.linspace(z_center-z_span/2, z_center+z_span/2, scan.get("zpa_points", 41))
+        grid = []
+        for bias in zpa:
+            local = dict(state, z_bias=float(bias))
+            fq = self._fq(local)
+            ridge = self._truth["fr"]+dispersive_shift_hz(
+                fq, self._truth["fr"], self._truth["g_hz"], self._truth["anh_hz"])
+            signal = .5-.4/(1+(2*(frequency-ridge)/2e6)**2)
+            grid.append(signal+self._noise(len(frequency))+1j*self._noise(len(frequency)))
+        grid = np.asarray(grid)
+        obs["sweep"] = {"frequency_values_hz": frequency.tolist(), "zpa_values": zpa.tolist(),
+                        "shape": list(grid.shape), "unit": ["normalized_zpa", "Hz"]}
+        obs["measurement"] = {"i": grid.real.tolist(), "q": grid.imag.tolist(), "unit": "a.u."}
+        from .analysis_tools import fit_s21_zpa2d
+        obs["fit_result"], obs["quality"] = fit_s21_zpa2d(obs)
+
+    def _xeb(self, obs: dict, state: dict, scan: dict) -> None:
+        max_depth, count = scan.get("max_depth", 96), scan.get("depth_points", 12)
+        circuits = scan.get("circuits_per_depth", 64)
+        depth = np.unique(np.rint(np.geomspace(1, max_depth, count)).astype(int))
+        pi_quality = np.exp(-((state["pi_amplitude"]-self._truth["pi"])/(.08*self._truth["pi"]))**2)
+        detuning = (state["drive_frequency_hz"]-self._fq(state))/1e6
+        cycle = 1-(1-self._truth["xeb_cycle_fidelity"])/max(pi_quality*np.exp(-(detuning/.12)**2), .15)
+        cycle = float(np.clip(cycle, .94, .9999))
+        sigma = .012*self.noise_scale/np.sqrt(circuits/16)
+        values = self._truth["xeb_spam"]+(1-self._truth["xeb_spam"])*cycle**depth
+        measured = np.clip(values+self.rng.normal(0, sigma, len(depth)), 0, 1)
+        obs["sweep"] = {"values": depth.astype(float).tolist(), "unit": "circuit_cycles"}
+        obs["measurement"] = {"i": measured.tolist(), "q": [sigma]*len(depth),
+                              "unit": "single_qubit_linear_xeb_proxy"}
+        obs["acquisition"] = {"circuits_per_depth": circuits, "randomized": True, "qubits": 1, "proxy": True}
+        from .analysis_tools import fit_xeb
+        obs["fit_result"], obs["quality"] = fit_xeb(obs)
+
     def _rabi(self, obs: dict, state: dict, scan: dict) -> None:
         x = np.linspace(0, scan.get("amplitude_max", 0.8), 161)
-        contrast = 1 / (1 + ((self._truth["fq"] - state["drive_frequency_hz"]) / 1.5e6) ** 2)
+        contrast = 1 / (1 + ((self._fq(state) - state["drive_frequency_hz"]) / 1.5e6) ** 2)
         y = 0.5 - 0.45 * contrast * np.cos(np.pi * x / self._truth["pi"]) + self._noise(x.size)
         z = y + 1j * self._noise(x.size)
         self._curve(obs, x, z, "normalized_amplitude")
@@ -164,7 +223,7 @@ class AnalyticSimulator:
     def _ramsey(self, obs: dict, state: dict, scan: dict) -> None:
         x = np.linspace(0, scan.get("delay_max_us", 12.0), 241)
         offset_mhz = 0.3
-        delta_mhz = (self._truth["fq"] - state["drive_frequency_hz"]) / 1e6
+        delta_mhz = (self._fq(state) - state["drive_frequency_hz"]) / 1e6
         pulse_contrast = np.sin(np.pi * state["pi_over_2_amplitude"] / self._truth["pi"]) ** 2
         z = 0.45 * pulse_contrast * np.exp(-x / self._truth["t2"]) * np.exp(2j * np.pi * (offset_mhz - delta_mhz) * x)
         z += self._noise(x.size) + 1j * self._noise(x.size)
@@ -199,7 +258,7 @@ class AnalyticSimulator:
 
     def _iq(self, obs: dict, state: dict, scan: dict) -> None:
         shots = scan.get("shots", 1024)
-        detuning = (state["drive_frequency_hz"] - self._truth["fq"]) / 1e6
+        detuning = (state["drive_frequency_hz"] - self._fq(state)) / 1e6
         excitation = np.sin(np.pi * state["pi_amplitude"] / (2 * self._truth["pi"])) ** 2 / (1 + (detuning / 1.5) ** 2)
         readout_gain = np.exp(-((state["readout_frequency_hz"] - self._truth["fr"]) / 2e6) ** 2)
         amplitude_gain = np.exp(-((state["readout_amplitude"] - self._truth["readout_optimum"]) / 0.25) ** 2)

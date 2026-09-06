@@ -43,30 +43,37 @@ native tool schema, public context, controller and simulator; the run configurat
 
 Use a new output directory each time. Exit code zero means the evaluation executed without a
 software/contract error; inspect `summary.json` for scientific success or escalation. Add
-`--adapter /absolute/path/to/final_adapter` only for a verified compatible v2 adapter.
-Old adapters trained on the legacy answer format are not compatible with native v2 decisions.
+`--adapter /absolute/path/to/final_adapter` only for an adapter verified against the active protocol.
+The released v2 adapter predates ZPA2D/XEB and is not claimed compatible with native v3 decisions.
 
 ## Scientific implementation
 
 | Stage | Observation / deterministic analysis |
 | --- | --- |
 | S21 | Complex resonator notch, gain, phase, cable delay and mismatch; bounded complex fit |
+| S21 ZPA2D | Frequency × normalized-ZPA complex S21 grid; measured ridge and periodic sweet-spot fit |
 | Spectroscopy | Driven Bloch steady-state response; fitted transition and ambiguity detection |
 | PiAmp | Detuned finite-pulse Rabi response; amplitude fit and repeat verification |
 | Ramsey | Signed complex coherence; frequency correction and uncertainty |
 | T1 / Echo | Shared relaxation/dephasing parameters; decay fits and coverage checks |
+| XEB | Synthetic single-qubit randomized-circuit fidelity decay and per-cycle threshold |
 | IQraw | Integrated dispersive response, preparation mixture, T1 jumps and receiver noise |
 
 `physical` is a reduced two-level RWA/Markov/linear-cavity model, not a full device simulator.
 `legacy` preserves the older analytic backend for explicit comparisons. Qiskit Metal is an optional
 design/EM parameter source, not an IQ measurement backend. QuTiP validates selected reduced dynamics.
 
+`sq.xeb` is explicitly a **synthetic single-qubit XEB-style proxy**. It is not Google's multiqubit
+random-circuit-sampling benchmark and not a two-qubit/coupler calibration. Standard Clifford randomized
+benchmarking is generally the more conventional single-qubit gate benchmark; this proxy is included to
+exercise an XEB-shaped acceptance stage requested for the simulated workflow.
+
 IQ centroids/classifier are fitted on even-indexed shots within each prepared label. Odd shots
 evaluate F0/F1, visibility and assignment fidelity. Two independent passing batches at unchanged
 settings are required. The maximum-visibility threshold is diagnostic only. Wilson intervals are
 reported, but do not silently change the acceptance gate. Gaussian overlap is not SPAM-corrected fidelity.
 
-## Recorded simulation acceptance
+## Recorded v2 simulation acceptance
 
 The verified fit-update policy accepted all three fresh-seed simulation episodes in nine experiments
 each. The figure below was regenerated from the saved final IQ acquisition for one episode; its
@@ -82,6 +89,8 @@ SNR amplitude = 3.51. The exact machine-readable values and confidence intervals
 ## Data and verification
 
 - [Training project](https://github.com/neonccx/nanbeige-calibration-sft): v2 data, frozen baselines and LoRA training.
+- [v3 physics and protocol](docs/PHYSICS_V3.md): flux-tunable transmon, ZPA2D and XEB-style assumptions.
+- [v3 implementation evidence](docs/V3_EVIDENCE.md): tests, rule closed loops, dataset audit and GPU status.
 - [Research basis](docs/research.md): formulas, validation boundary and QMClaw adoption decisions.
 - [Fit-update protocol](docs/FIT_UPDATE_PROTOCOL.md): deterministic fit arithmetic and model/tool boundary.
 - [Simulation evidence](docs/SIMULATION_EVIDENCE.md): fresh-seed closed-loop results and IQ figure provenance.
@@ -94,6 +103,8 @@ python -m unittest discover -s tests -q
 python scripts/validate_dynamics.py --output runs/new-validation/dynamics.json
 python scripts/build_dataset_v2.py --devices 64 --output /absolute/new-dataset-directory
 python scripts/audit_dataset_v2.py --dataset /absolute/dataset --model /absolute/model --output runs/new-audit.json
+python scripts/build_dataset_v3.py --devices 32 --output /absolute/new-dataset-v3
+python scripts/audit_dataset_v3.py /absolute/new-dataset-v3
 ```
 
 Install `.[validation]` for the QuTiP check. Keep `evaluator_only/` out of training inputs. Raw artifacts

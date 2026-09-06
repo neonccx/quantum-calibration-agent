@@ -69,7 +69,7 @@ class RuntimeTests(unittest.TestCase):
     def test_rule_full_loop(self):
         result = AgentRunner(AnalyticSimulator(20260903), RulePolicy()).run()
         self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["completed_stages"], list(TOOLS[:6]))
+        self.assertEqual(result["completed_stages"], list(TOOLS[:-1]))
         self.assertGreaterEqual(result["consecutive_iq_passes"], 2)
         self.assertTrue(result["final_iq_gate"]["passed"])
 
@@ -170,9 +170,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_invalidation(self):
         changed = DEFAULT_STATE | {"readout_frequency_hz": 6.51e9}
-        self.assertEqual(invalidate(set(range(6)), DEFAULT_STATE, changed), set())
+        self.assertEqual(invalidate(set(range(len(TOOLS)-1)), DEFAULT_STATE, changed), {0})
         changed = DEFAULT_STATE | {"drive_frequency_hz": 5.01e9}
-        self.assertEqual(invalidate(set(range(6)), DEFAULT_STATE, changed), {0})
+        self.assertEqual(invalidate(set(range(len(TOOLS)-1)), DEFAULT_STATE, changed), {0, 1})
 
     def test_rabi_requires_repeat_even_if_initial_guess_is_correct(self):
         obs = {"tool": "sq.piamp", "quality": {"reliable": True}, "round_in_experiment": 1,

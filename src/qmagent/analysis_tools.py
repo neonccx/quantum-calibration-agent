@@ -13,10 +13,12 @@ from scipy.signal import find_peaks, savgol_filter
 from .physics import complex_notch, PHYSICS_VERSION, SOURCES
 from .simulator import iq_gate, r2
 from .storage import digest
+from .contracts import XEB_THRESHOLDS
 
-ANALYSIS_VERSION = "analysis-0.2"
+ANALYSIS_VERSION = "analysis-flux-xeb-0.3"
 REGISTRY = {name: "analysis." + name.split(".")[1] for name in (
-    "sq.s21", "sq.spectroscopy", "sq.piamp", "sq.ramsey_df", "sq.t1", "sq.t2_echo", "sq.iqraw")}
+    "sq.s21", "sq.s21_zpa2d", "sq.spectroscopy", "sq.piamp", "sq.ramsey_df",
+    "sq.t1", "sq.t2_echo", "sq.xeb", "sq.iqraw")}
 
 
 def _fit_curve(x, y, fn, guesses, bounds, names):
@@ -122,6 +124,91 @@ def fit_spectroscopy(obs):
     return fit, quality
 
 
+def fit_s21_zpa2d(obs):
+    """Extract the measured resonance ridge, then locate its periodic sweet spot.
+
+    The fit sees only the complex S21 grid.  It does not receive SQUID truth or the
+    qubit-frequency curve used by the simulator.
+    """
+    frequency = np.asarray(obs["sweep"]["frequency_values_hz"], dtype=float)
+    zpa = np.asarray(obs["sweep"]["zpa_values"], dtype=float)
+    z = np.asarray(obs["measurement"]["i"], dtype=float)+1j*np.asarray(obs["measurement"]["q"], dtype=float)
+    ridge = []
+    for trace in z:
+        window = min(9, len(trace) if len(trace) % 2 else len(trace)-1)
+        magnitude = savgol_filter(np.abs(trace), window, 2)
+        index = int(np.argmin(magnitude))
+        if 0 < index < len(frequency)-1:
+            xs = frequency[index-1:index+2]
+            coefficients = np.polyfit(xs-frequency[index], magnitude[index-1:index+2], 2)
+            offset = -coefficients[1]/(2*coefficients[0]) if coefficients[0] > 0 else 0.0
+            ridge.append(float(frequency[index]+np.clip(offset, xs[0]-frequency[index], xs[-1]-frequency[index])))
+        else:
+            ridge.append(float(frequency[index]))
+    ridge = np.asarray(ridge)
+    center = float((zpa[0]+zpa[-1])/2)
+    candidates = []
+    for period in np.linspace(max(.55, .75*np.ptp(zpa)), min(1.45, 1.6*np.ptp(zpa)), 181):
+        phase = 2*np.pi*(zpa-center)/period
+        design = np.column_stack([np.ones_like(zpa), np.cos(phase), np.sin(phase),
+                                  np.cos(2*phase), np.sin(2*phase)])
+        coefficients, *_ = np.linalg.lstsq(design, ridge, rcond=None)
+        prediction = design@coefficients
+        candidates.append((r2(ridge, prediction), period, coefficients))
+    score, period, coefficients = max(candidates, key=lambda item: item[0])
+    dense = np.linspace(zpa[0], zpa[-1], 10001)
+    phase = 2*np.pi*(dense-center)/period
+    prediction = np.column_stack([np.ones_like(dense), np.cos(phase), np.sin(phase),
+                                  np.cos(2*phase), np.sin(2*phase)])@coefficients
+    gradient = np.gradient(prediction, dense)
+    turns = np.where(np.signbit(gradient[:-1]) != np.signbit(gradient[1:]))[0]+1
+    margin = .06*np.ptp(zpa)
+    turns = turns[(dense[turns] > zpa[0]+margin) & (dense[turns] < zpa[-1]-margin)]
+    if not len(turns):
+        return {}, {"reliable": False, "reason": "no_interior_ridge_extremum", "fit_r2": float(score)}
+    # In this declared negative-anharmonicity dispersive model the maximum-f01
+    # transmon sweet spot gives the most negative resonator shift.
+    sweet_index = int(turns[np.argmin(prediction[turns])])
+    sweet = float(dense[sweet_index])
+    readout = float(prediction[sweet_index])
+    step = float(np.median(np.diff(frequency)))
+    rmse = float(np.sqrt(np.mean((ridge-(np.column_stack([
+        np.ones_like(zpa), np.cos(2*np.pi*(zpa-center)/period), np.sin(2*np.pi*(zpa-center)/period),
+        np.cos(4*np.pi*(zpa-center)/period), np.sin(4*np.pi*(zpa-center)/period)])@coefficients))**2)))
+    checks = {"ridge_fit_r2": score >= .85, "interior_sweet_spot": True,
+              "ridge_contrast": float(np.ptp(ridge)) >= 3*step, "ridge_rmse": rmse <= 2.5*step}
+    return {"sweet_spot_zpa": sweet, "readout_frequency_hz": readout,
+            "flux_period_zpa": float(period), "ridge_span_hz": float(np.ptp(ridge)),
+            "ridge_rmse_hz": rmse}, {"reliable": bool(all(checks.values())), "fit_r2": float(score),
+            "checks": {key: bool(value) for key, value in checks.items()},
+            "reason": "periodic_resonance_ridge_fit", "uncertainty_method": "grid_resolution",
+            "standard_errors": {"sweet_spot_zpa": float(np.diff(dense).mean()),
+                                "readout_frequency_hz": max(step, rmse)}}
+
+
+def fit_xeb(obs):
+    depth = np.asarray(obs["sweep"]["values"], dtype=float)
+    fidelity = np.asarray(obs["measurement"]["i"], dtype=float)
+    fn = lambda m, offset, amplitude, cycle: offset+amplitude*cycle**m
+    fitted, quality = _fit_curve(depth, fidelity, fn,
+        [[.02, .98, value] for value in (.97, .985, .995)],
+        ([0, .2, .9], [.2, 1.2, .99999]), ["spam_offset", "amplitude", "per_cycle_fidelity"])
+    if not fitted:
+        return fitted, quality
+    fitted["error_per_cycle"] = 1-fitted["per_cycle_fidelity"]
+    stderr = quality["standard_errors"]["per_cycle_fidelity"]
+    checks = {"fit_r2": quality["fit_r2"] >= XEB_THRESHOLDS["fit_r2"],
+              "cycle_uncertainty": stderr <= XEB_THRESHOLDS["max_standard_error"],
+              "depth_coverage": depth.max() >= 32 and len(depth) >= 5}
+    quality["checks"] = {key: bool(value) for key, value in checks.items()}
+    quality["reliable"] = bool(all(checks.values()) and not quality.get("bound_hit", False))
+    fitted["passed"] = bool(quality["reliable"] and
+                            fitted["per_cycle_fidelity"] >= XEB_THRESHOLDS["per_cycle_fidelity"])
+    fitted["threshold"] = XEB_THRESHOLDS["per_cycle_fidelity"]
+    quality["reason"] = "single_qubit_xeb_style_decay_fit"
+    return fitted, quality
+
+
 def analyze(observation: dict) -> dict:
     """Return analysis separately; never mutate the acquisition artifact."""
     obs = copy.deepcopy(observation)
@@ -130,7 +217,14 @@ def analyze(observation: dict) -> dict:
         raise ValueError("Unregistered analysis tool")
     y = np.asarray(obs["measurement"]["i"], dtype=float)
     q = np.asarray(obs["measurement"]["q"], dtype=float)
-    if y.ndim != 1 or y.size < 16 or q.shape != y.shape or not np.isfinite(np.r_[y, q]).all():
+    if tool == "sq.s21_zpa2d":
+        if y.ndim != 2 or min(y.shape) < 16 or q.shape != y.shape or not np.isfinite(y).all() or not np.isfinite(q).all():
+            raise ValueError("Invalid finite aligned ZPA2D I/Q grid")
+        fitted, quality = fit_s21_zpa2d(obs)
+        return {"fit_result": fitted, "quality": quality, "analysis_tool": REGISTRY[tool],
+                "analysis_version": ANALYSIS_VERSION, "input_sha256": digest(observation),
+                "physics_version": PHYSICS_VERSION, "sources": SOURCES}
+    if y.ndim != 1 or y.size < 5 or q.shape != y.shape or not np.isfinite(np.r_[y, q]).all():
         raise ValueError("Invalid finite aligned I/Q observations")
     if tool == "sq.iqraw":
         gate = iq_gate(obs["measurement"])
@@ -160,6 +254,8 @@ def analyze(observation: dict) -> dict:
         if fitted:
             quality["reliable"] = bool(quality["reliable"] and fitted["contrast"] >= .3
                 and x.max() >= 2*fitted[name])
+    elif tool == "sq.xeb":
+        fitted, quality = fit_xeb(obs)
     else:
         z = y+1j*q
         # FFT supplies a bounded frequency guess; nonlinear complex fitting avoids log-envelope bias.

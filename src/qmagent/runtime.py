@@ -7,8 +7,9 @@ import math
 import json
 from collections import Counter
 
-from .contracts import (ContractError, DEFAULT_STATE, IQ_THRESHOLDS, SCAN_KEYS,
-                        SCAN_LIMITS, STATE_LIMITS, TOOLS, parse_decision, validate_observation, validate_scan)
+from .contracts import (CALIBRATION_STAGES, ContractError, DEFAULT_STATE, IQ_THRESHOLDS, XEB_THRESHOLDS,
+                        SCAN_KEYS, SCAN_LIMITS, STATE_LIMITS, TOOLS, parse_decision,
+                        validate_observation, validate_scan)
 from .simulator import iq_gate
 
 
@@ -24,6 +25,9 @@ def stage_passed(observation: dict, candidate: dict) -> bool:
     previous = observation["current_parameters"]
     if tool == "sq.s21":
         return _close(candidate["readout_frequency_hz"], fit["frequency_hz"], 1e5)
+    if tool == "sq.s21_zpa2d":
+        return (_close(candidate["z_bias"], fit["sweet_spot_zpa"], .01)
+                and _close(candidate["readout_frequency_hz"], fit["readout_frequency_hz"], 2e5))
     if tool == "sq.spectroscopy":
         return _close(candidate["drive_frequency_hz"], fit["frequency_hz"], 1e5)
     if tool == "sq.piamp":
@@ -43,19 +47,21 @@ def stage_passed(observation: dict, candidate: dict) -> bool:
                 and candidate["relaxation_delay_us"] >= 5 * fit["t1_us"])
     if tool == "sq.t2_echo":
         return _close(candidate["t2_echo_us"], fit["t2_echo_us"], 0.1 * fit["t2_echo_us"])
+    if tool == "sq.xeb":
+        return bool(fit.get("passed") and fit["per_cycle_fidelity"] >= XEB_THRESHOLDS["per_cycle_fidelity"])
     return False  # IQ is always checked independently from raw held-out shots.
 
 
 def invalidate(completed: set, old: dict, new: dict) -> set:
-    affected = {"readout_frequency_hz": 0, "drive_frequency_hz": 3, "pi_amplitude": 2,
-                "pi_over_2_amplitude": 2, "t2_star_us": 3, "t1_us": 4,
-                "t2_echo_us": 5, "readout_amplitude": 6, "relaxation_delay_us": 6}
-    first = 7
+    affected = {"readout_frequency_hz": 1, "z_bias": 1, "drive_frequency_hz": 4, "pi_amplitude": 3,
+                "pi_over_2_amplitude": 3, "t2_star_us": 4, "t1_us": 5,
+                "t2_echo_us": 6, "readout_amplitude": 8, "relaxation_delay_us": 8}
+    first = len(TOOLS)
     for key in new:
         if new[key] != old[key]:
             start = affected[key]
             if key == "drive_frequency_hz" and abs(new[key] - old[key]) >= 5e5:
-                start = 1
+                start = 2
             first = min(first, start)
     return {index for index in completed if index < first}
 
@@ -80,10 +86,11 @@ class AgentRunner:
 
     def context(self) -> dict:
         return copy.deepcopy({
-                "schema_version": "runtime-0.1", "state": self.state, "observation": self.observation,
+                "schema_version": "runtime-0.2", "state": self.state, "observation": self.observation,
                 "recent_history": self.history[-8:], "completed_stages": [TOOLS[i] for i in sorted(self.completed)],
                 "consecutive_iq_passes": self.passes, "required_iq_passes": 2,
                 "available_tools": list(TOOLS), "iq_thresholds": IQ_THRESHOLDS,
+                "xeb_thresholds": XEB_THRESHOLDS,
                 "parameter_bounds": STATE_LIMITS, "scan_bounds": SCAN_LIMITS,
                 "tool_scan_keys": {tool: sorted(keys) for tool, keys in SCAN_KEYS.items()},
                 "budget": {"remaining_experiments": self.max_steps - sum(self.counts.values()),
@@ -110,7 +117,7 @@ class AgentRunner:
         candidate = self.state | action["parameter_action"]["updates"]
         completed = invalidate(self.completed, self.state, candidate)
         if tool == "FINISH":
-            if not (self.passes >= 2 and self.completed == set(range(6)) and self.observation
+            if not (self.passes >= 2 and self.completed == set(range(len(CALIBRATION_STAGES))) and self.observation
                     and self.observation["tool"] == "sq.iqraw"):
                 raise ContractError("Premature FINISH: independent IQ gate/prerequisites not satisfied")
         elif tool != "ESCALATE_HARDWARE_REVIEW":
@@ -228,7 +235,7 @@ class AgentRunner:
 
     def snapshot(self) -> dict:
         """Private simulator recovery data; never send this to a policy."""
-        return copy.deepcopy({"version": 1, "state": self.state, "completed": sorted(self.completed),
+        return copy.deepcopy({"version": 2, "state": self.state, "completed": sorted(self.completed),
             "counts": dict(self.counts), "observation": self.observation, "history": self.history,
             "passes": self.passes, "latest_gate": self.latest_gate, "pending": self.pending,
             "status": self.status, "reason": self.reason, "decision_index": self.decision_index,
@@ -239,10 +246,15 @@ class AgentRunner:
         from .contracts import bounded
         data = copy.deepcopy(snapshot)
         json.dumps(data, allow_nan=False)
-        if data["version"] != 1 or set(data["state"]) != set(DEFAULT_STATE):
+        if data.get("version") == 1:
+            data["state"].setdefault("z_bias", DEFAULT_STATE["z_bias"])
+            old_to_new = {0: 0, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6}
+            data["completed"] = [old_to_new[index] for index in data["completed"] if index in old_to_new]
+            data["version"] = 2
+        if data.get("version") != 2 or set(data["state"]) != set(DEFAULT_STATE):
             raise ValueError("Unsupported checkpoint schema")
         bounded(data["state"], STATE_LIMITS)
-        if (not set(data["completed"]) <= set(range(6))
+        if (not set(data["completed"]) <= set(range(len(CALIBRATION_STAGES)))
                 or not set(data["counts"]) <= set(TOOLS)
                 or any(type(n) is not int or not 0 <= n <= self.max_tool_calls for n in data["counts"].values())
                 or sum(data["counts"].values()) > self.max_steps

@@ -14,6 +14,8 @@ def calculate_fit_updates(observation, state):
     updates = {}
     if tool == "sq.s21":
         updates = {"readout_frequency_hz": fit["frequency_hz"]}
+    elif tool == "sq.s21_zpa2d":
+        updates = {"z_bias": fit["sweet_spot_zpa"], "readout_frequency_hz": fit["readout_frequency_hz"]}
     elif tool == "sq.spectroscopy":
         updates = {"drive_frequency_hz": fit["frequency_hz"]}
     elif tool == "sq.piamp":
@@ -31,7 +33,7 @@ def calculate_fit_updates(observation, state):
         raise ValueError("No fit-update arithmetic registered for this observation")
     if any(isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) for value in updates.values()):
         raise ValueError("Calculated parameter values must be finite numbers")
-    return {"tool": "analysis.calculate_fit_updates", "version": "0.1", "updates": updates,
+    return {"tool": "analysis.calculate_fit_updates", "version": "0.2", "updates": updates,
             "source_sha256": digest({"fit_result": fit, "current_parameters": observation.get("current_parameters"),
                                      "tool": tool, "quality": observation["quality"]}),
             "requires_controller_validation": True}

@@ -12,13 +12,15 @@ def main():
     args = parser.parse_args()
     console = Console(width=86, record=True)
     ui = TerminalDesign(console)
-    ui.banner({"version": "0.4", "session_id": "design-preview · illustrative data",
+    ui.banner({"version": "0.5", "session_id": "design-preview · illustrative data",
                "directory": "<server session directory>",
                "settings": {"policy": "hf", "model": "Nanbeige4.2-3B", "adapter": None}}, remote=True)
     console.print(ui.text(ui.prompt() + "Show calibration progress"))
-    ui.status({"status": "active", "experiment_count": 4, "max_steps": 30,
-               "consecutive_iq_passes": 0, "completed_stages": ["S21", "Spectroscopy"],
-               "final_state": {"readout_frequency_GHz": 6.51, "qubit_frequency_GHz": 5.03},
+    ui.status({"status": "active", "experiment_count": 5, "max_steps": 30,
+               "consecutive_iq_passes": 0,
+               "completed_stages": ["sq.s21", "sq.s21_zpa2d", "sq.spectroscopy"],
+               "final_state": {"readout_frequency_GHz": 6.51, "z_bias": 0.04,
+                               "qubit_frequency_GHz": 5.03},
                "final_iq_gate": None, "reason": None})
     console.print(ui.text("Illustrative interface data, not a measured result."))
     console.print(ui.text(ui.prompt() + "Explain the next step"))

@@ -50,7 +50,7 @@ class CalibrationSession:
         metadata = {"version": 1, "package_version": __version__, "session_id": session_id,
                     "created_at": datetime.now(timezone.utc).isoformat(), "settings": settings.to_dict(),
                     "source_sha256": source_hashes(), "backend": make_backend(settings).backend_name,
-                    "synthetic": True, "runtime_schema": "runtime-0.1"}
+                    "synthetic": True, "runtime_schema": "runtime-0.2"}
         session = None
         try:
             atomic_json(directory / "session_config.json", metadata)

@@ -4,6 +4,10 @@ Krantz et al., APR 6, 021318 (2019), sections III.B, IV.C, V.A-C:
 https://doi.org/10.1063/1.5089550
 Probst et al., RSI 86, 024706 (2015), Eq. 1:
 https://doi.org/10.1063/1.4907935
+Koch et al., PRA 76, 042319 (2007), split-junction transmon flux tuning:
+https://doi.org/10.1103/PhysRevA.76.042319
+Arute et al., Nature 574, 505-510 (2019), XEB circuit-fidelity decay:
+https://doi.org/10.1038/s41586-019-1666-5
 
 Two levels, rotating-wave/Markov limits, short rectangular control pulses,
 linear dispersive cavity and Gaussian receiver noise. Not a hardware twin.
@@ -14,8 +18,32 @@ from __future__ import annotations
 
 import numpy as np
 
-PHYSICS_VERSION = "reduced-cqed-0.2"
-SOURCES = ["https://doi.org/10.1063/1.5089550", "https://doi.org/10.1063/1.4907935"]
+PHYSICS_VERSION = "reduced-cqed-flux-xeb-0.3"
+SOURCES = ["https://doi.org/10.1063/1.5089550", "https://doi.org/10.1063/1.4907935",
+           "https://doi.org/10.1103/PhysRevA.76.042319", "https://doi.org/10.1038/s41586-019-1666-5"]
+
+
+def squid_effective_ej(ej_sum_hz, flux_quanta, asymmetry):
+    """Effective split-junction Josephson energy in frequency units.
+
+    ``flux_quanta`` is dimensionless Phi/Phi0.  The absolute value selects the
+    positive SQUID energy branch; junction asymmetry prevents a zero at half flux.
+    """
+    phase = np.pi*np.asarray(flux_quanta, dtype=float)
+    return ej_sum_hz*np.sqrt(np.cos(phase)**2+asymmetry**2*np.sin(phase)**2)
+
+
+def flux_transmon_frequency(zpa, sweet_spot_zpa, flux_period_zpa, ej_sum_hz, ec_hz, asymmetry):
+    """Leading-order transmon f01 for a flux-tunable asymmetric SQUID."""
+    flux = (np.asarray(zpa, dtype=float)-sweet_spot_zpa)/flux_period_zpa
+    ej = squid_effective_ej(ej_sum_hz, flux, asymmetry)
+    return np.sqrt(8*ec_hz*ej)-ec_hz
+
+
+def dispersive_shift_hz(qubit_hz, resonator_hz, coupling_hz, anharmonicity_hz):
+    """Reduced dispersive shift g^2 alpha/[Delta(Delta+alpha)]."""
+    delta = np.asarray(qubit_hz, dtype=float)-resonator_hz
+    return coupling_hz**2*anharmonicity_hz/(delta*(delta+anharmonicity_hz))
 
 
 def complex_notch(f, fr, ql, depth, phase=0., gain=1., phase_offset=0., delay_s=0., reference_hz=0.):

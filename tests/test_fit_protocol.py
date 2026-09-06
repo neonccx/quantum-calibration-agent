@@ -25,7 +25,7 @@ class FitProtocolTests(unittest.TestCase):
         controller.observation = self.context["observation"]
         with self.assertRaises(ValueError):
             controller._candidate(action)  # Missing prerequisites must still reject.
-        controller.completed = {0, 1, 2}
+        controller.completed = {0, 1, 2, 3}
         controller._candidate(action)
 
     def test_hf_path_exposes_tool_and_records_raw_choice(self):

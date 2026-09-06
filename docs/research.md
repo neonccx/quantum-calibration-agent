@@ -9,13 +9,31 @@ Primary scientific references:
   021318 (2019): https://doi.org/10.1063/1.5089550
 - Probst et al., *Efficient and robust analysis of complex scattering data under noise in microwave
   resonators* (2015): https://doi.org/10.1063/1.4907935
+- Koch et al., *Charge-insensitive qubit design derived from the Cooper pair box* (2007), including
+  split-junction flux tuning: https://doi.org/10.1103/PhysRevA.76.042319
+- Arute et al., *Quantum supremacy using a programmable superconducting processor* (2019), including
+  XEB circuit-fidelity decay: https://doi.org/10.1038/s41586-019-1666-5
+- Knill et al., *Randomized benchmarking of quantum gates* (2008):
+  https://doi.org/10.1103/PhysRevA.77.012307
 - QuTiP Lindblad dynamics documentation: https://qutip.readthedocs.io/en/stable/guide/dynamics/dynamics-master.html
 
-The implemented `reduced-cqed-0.2` backend shares device parameters across S21, spectroscopy,
+The preserved v2 `reduced-cqed-0.2` backend shares device parameters across S21, spectroscopy,
 finite-pulse Rabi, signed Ramsey, T1, echo and IQ acquisition. QuTiP 5.3.1 independently checked 14
 reduced-regime cases. The largest population/coherence discrepancy was 2.57e-7 against a 2e-6
 tolerance; the cavity discrepancy was 2.57e-12 against 1e-8. This is not multilevel, EM or hardware
 validation.
+
+The active v3 backend `reduced-cqed-flux-xeb-0.3` adds an asymmetric split-junction transmon. Its
+hidden `sweet_zpa`, flux period and junction asymmetry determine the qubit transition through the
+leading-order transmon approximation. The resonator ridge uses the reduced dispersive shift. ZPA2D
+analysis receives only the measured complex grid, extracts the resonance ridge and fits its periodic
+extremum; simulator truth never enters a model prompt. Spectroscopy then evaluates the qubit frequency
+at the controller's committed `z_bias`. See [PHYSICS_V3.md](PHYSICS_V3.md).
+
+The XEB stage is deliberately labelled a synthetic, single-qubit XEB-style decay proxy. It fits
+`offset + amplitude * per_cycle_fidelity**depth` and requires a reliable fit plus per-cycle fidelity
+at least 0.985. It is not a multiqubit linear-XEB claim, does not include two-qubit gates or couplers,
+and does not displace standard single-qubit randomized benchmarking as the conventional experiment.
 
 QMClaw was reviewed at pinned commit `18d7fa1594949a1203fca4866e651641bbde021f`.
 All 144 authored files were statically read; 59 generated/dependency artifacts were only inventoried,

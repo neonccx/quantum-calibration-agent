@@ -6,7 +6,7 @@ import json
 import hashlib
 from pathlib import Path
 
-from .contracts import TOOLS, decision
+from .contracts import CALIBRATION_STAGES, TOOLS, decision
 from .runtime import invalidate, stage_passed
 
 
@@ -30,23 +30,32 @@ class RulePolicy:
                 if amplitude not in tried:
                     return decision(tool, {"readout_amplitude": amplitude}, reason="IQ failed: try next bounded readout amplitude")
             return decision("ESCALATE_HARDWARE_REVIEW", reason="Readout candidate search exhausted; review synthetic failure")
+        if tool == "sq.xeb" and obs["quality"]["reliable"] and not obs["fit_result"].get("passed", False):
+            return decision("ESCALATE_HARDWARE_REVIEW", reason="XEB-style cycle fidelity is below threshold; no hidden gate retuning is available")
         if not obs["quality"]["reliable"]:
             if obs["quality"].get("ambiguous_peaks"):
                 return decision("ESCALATE_HARDWARE_REVIEW", reason="Multiple comparable transitions: do not select an unsupported peak")
             scan = dict(obs["scan"])
-            if tool in TOOLS[:2]:
+            if tool in ("sq.s21", "sq.spectroscopy"):
                 default = 40e6 if tool == "sq.s21" else 100e6
                 scan["frequency_span_hz"] = min(300e6, scan.get("frequency_span_hz", default) * 1.5)
+            elif tool == "sq.s21_zpa2d":
+                scan["zpa_points"] = min(101, max(41, scan.get("zpa_points", 41)+20))
+                scan["frequency_points"] = min(501, max(241, scan.get("frequency_points", 241)+80))
             elif tool == "sq.piamp":
                 scan["amplitude_max"] = min(1.0, scan.get("amplitude_max", 0.8) * 1.2)
             elif tool in ("sq.t1", "sq.t2_echo"):
                 scan["delay_max_us"] = min(200.0, scan.get("delay_max_us", 120.0) * 1.4)
+            elif tool == "sq.xeb":
+                scan["circuits_per_depth"] = min(512, scan.get("circuits_per_depth", 64)*2)
             return decision(tool, scan=scan, reason="Fit/coverage unreliable: bounded repeat, no parameter write")
         fit = obs["fit_result"]
         updates = {}
-        if tool in TOOLS[:2]:
+        if tool in ("sq.s21", "sq.spectroscopy"):
             key = "readout_frequency_hz" if tool == "sq.s21" else "drive_frequency_hz"
             updates[key] = fit["frequency_hz"]
+        elif tool == "sq.s21_zpa2d":
+            updates = {"z_bias": fit["sweet_spot_zpa"], "readout_frequency_hz": fit["readout_frequency_hz"]}
         elif tool == "sq.piamp":
             updates = {"pi_amplitude": fit["pi_amplitude"], "pi_over_2_amplitude": fit["pi_amplitude"] / 2}
         elif tool == "sq.ramsey_df":
@@ -60,7 +69,8 @@ class RulePolicy:
         completed = invalidate({TOOLS.index(name) for name in context["completed_stages"]}, state, candidate)
         if stage_passed(obs, candidate):
             completed.add(TOOLS.index(tool))
-        next_index = next((index for index in range(6) if index not in completed), 6)
+        next_index = next((index for index in range(len(CALIBRATION_STAGES)) if index not in completed),
+                          len(CALIBRATION_STAGES))
         return decision(TOOLS[next_index], updates, reason="Apply measured fit; verify or advance to earliest incomplete stage")
 
 
@@ -71,13 +81,18 @@ Runtime schema 0.1 is NOT the old dataset POLICY answer schema. Do not output di
 extracted_metrics, action strings, or final_iq_acceptance. Use public fit_result/measurement
 only. No arbitrary code, shell commands or unlisted tools. units: Hz, us, normalized amplitudes.
 updates modify state BEFORE the selected experiment; scan overrides apply to that experiment only.
-Tools must respect prerequisites in order: s21, spectroscopy, piamp, ramsey_df, t1, t2_echo, iqraw.
+Tools must respect prerequisites in order: s21, s21_zpa2d, spectroscopy, piamp, ramsey_df,
+t1, t2_echo, xeb, iqraw.
 S21 scans the READOUT resonator around state.readout_frequency_hz (6-7 GHz), never
 the drive transition. Spectroscopy scans around state.drive_frequency_hz (4-6 GHz).
+S21_ZPA2D scans complex readout S21 over frequency and normalized ZPA. Apply its fitted
+sweet_spot_zpa to state.z_bias and fitted readout_frequency_hz before spectroscopy.
 A fit must be reliable and fitted parameters applied before advancing. PiAmp needs a repeat
 with existing pi and pi/2 amplitudes within 3% of fitted pi; set pi/2 to half pi.
 Ramsey needs correction <50000 Hz before advancing; add signed frequency_correction_hz to drive.
-After T1 set relaxation_delay_us >= 5*t1_us. Repeat unreliable observations within budgets.
+After T1 set relaxation_delay_us >= 5*t1_us. XEB is a single-qubit synthetic random-circuit
+decay proxy; advance only when its reliable fit explicitly passes the supplied threshold.
+Repeat unreliable observations within budgets.
 FINISH requires two consecutive independent IQ passes, all prerequisites, no state change.
 Terminal actions FINISH and ESCALATE_HARDWARE_REVIEW must have empty updates and scan.
 If unable to safely improve, use ESCALATE_HARDWARE_REVIEW. Bounds are supplied in context.

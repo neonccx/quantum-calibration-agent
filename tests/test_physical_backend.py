@@ -28,7 +28,8 @@ class PhysicalTests(unittest.TestCase):
         result = analyze(raw)
         self.assertEqual(raw, original)
         self.assertTrue(result["quality"]["reliable"])
-        self.assertLess(abs(result["fit_result"]["frequency_hz"]-backend._truth["fr"]), 2e4)
+        expected = backend._readout_frequency(DEFAULT_STATE["z_bias"])
+        self.assertLess(abs(result["fit_result"]["frequency_hz"]-expected), 2e4)
         self.assertLess(abs(result["fit_result"]["cable_delay_s"]-backend._truth["delay"]), 1e-9)
         json.dumps(result, allow_nan=False)
 

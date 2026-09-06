@@ -7,7 +7,7 @@ import re
 from .contracts import TOOLS, parse_decision
 from .storage import digest
 
-PROTOCOL_VERSION = "calibration-step-0.2"
+PROTOCOL_VERSION = "calibration-step-0.3"
 TOOLS_SCHEMA = [{"type": "function", "function": {
     "name": "calibration.step",
     "description": "Apply bounded parameter updates, acquire the named simulated experiment and run its registered deterministic analysis. Terminal actions acquire nothing. No hardware or shell access.",
@@ -31,13 +31,26 @@ def public_context(context):
         sweep = obs.pop("sweep", {})
         if "raw_reference" not in obs:
             obs["raw_reference"] = obs.pop("raw_artifact", {"sha256": digest({"measurement": measurement, "sweep": sweep})})
-            obs["raw_reference"]["array_lengths"] = {key: len(value) for key, value in measurement.items() if isinstance(value, list)}
+            def shape(value):
+                if not isinstance(value, list):
+                    return None
+                return [len(value)]+(shape(value[0]) or []) if value else [0]
+            obs["raw_reference"]["array_shapes"] = {key: shape(value) for key, value in measurement.items()
+                                                     if isinstance(value, list)}
+            obs["raw_reference"]["array_lengths"] = {key: len(value) for key, value in measurement.items()
+                                                      if isinstance(value, list)}
         obs["raw_reference"]["availability"] = "controller audit artifact; not model input"
         if sweep:
-            obs["sweep_summary"] = {key: value for key, value in sweep.items() if key != "values"}
+            obs["sweep_summary"] = {key: value for key, value in sweep.items()
+                                    if key not in {"values", "frequency_values_hz", "zpa_values"}}
             values = sweep.get("values", [])
             if values:
                 obs["sweep_summary"].update(start=values[0], stop=values[-1], count=len(values))
+            for key in ("frequency_values_hz", "zpa_values"):
+                values = sweep.get(key, [])
+                if values:
+                    obs["sweep_summary"][key.removesuffix("_values_hz").removesuffix("_values")+"_axis"] = {
+                        "start": values[0], "stop": values[-1], "count": len(values)}
     return view
 
 
