@@ -275,3 +275,61 @@ class HuggingFacePolicy:
             **(stream_stats if streamer else {})}
         return self.tokenizer.decode(suffix, skip_special_tokens=True,
                                      **({"clean_up_tokenization_spaces": False} if allow_graph else {})).strip()
+
+    def _generate_batch(self, message_batches, max_new_tokens, tools=None):
+        """Reference HF generation for independent prompts, batched for offline evaluation.
+
+        This deliberately does not replace the latency-oriented interactive path.  Left
+        padding plus an attention mask preserves each prompt while allowing the H100 to
+        evaluate several frozen contexts in one generate call.
+        """
+        import time
+
+        if not message_batches:
+            return [], []
+        started = time.monotonic()
+        prompts = [self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False, preserve_thinking=False,
+            **({"tools": tools, "tool_call_format": "json"} if tools else {}))
+            for messages in message_batches]
+        old_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        try:
+            encoded = self.tokenizer(prompts, return_tensors="pt", padding=True,
+                                     add_special_tokens=False)
+        finally:
+            self.tokenizer.padding_side = old_padding_side
+        lengths = encoded["attention_mask"].sum(dim=1).tolist()
+        model_limit = getattr(self.model.config, "max_position_embeddings", None)
+        for length in lengths:
+            if length > self.max_input_tokens or (model_limit and length + max_new_tokens > model_limit):
+                raise ValueError(f"Prompt {length} tokens exceeds configured/model context budget; refusing truncation")
+        device = self.model.get_input_embeddings().weight.device
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        padded_length = encoded["input_ids"].shape[1]
+        with self.torch.inference_mode():
+            generated = self.model.generate(
+                **encoded, do_sample=False, max_new_tokens=max_new_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id)
+        batch_seconds = time.monotonic() - started
+        texts, details = [], []
+        for index, length in enumerate(lengths):
+            suffix = generated[index, padded_length:].tolist()
+            if self.tokenizer.eos_token_id in suffix:
+                suffix = suffix[:suffix.index(self.tokenizer.eos_token_id) + 1]
+            texts.append(self.tokenizer.decode(suffix, skip_special_tokens=True).strip())
+            details.append({
+                "input_tokens": int(length),
+                "generated_tokens": len(suffix),
+                "output_token_sha256": hashlib.sha256(
+                    json.dumps(suffix, separators=(",", ":")).encode()).hexdigest(),
+                "hit_output_limit": bool(len(suffix) >= max_new_tokens and
+                                         suffix[-1] != self.tokenizer.eos_token_id),
+                "seconds": batch_seconds,
+                "amortized_seconds": batch_seconds / len(message_batches),
+                "batch_size": len(message_batches),
+                "decode_backend": "hf_batch",
+            })
+        return texts, details

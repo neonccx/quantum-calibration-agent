@@ -10,8 +10,7 @@ from collections import Counter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"src"))
 from qmagent.policies import HuggingFacePolicy
-from qmagent.contracts import parse_decision
-from qmagent.protocol import PROTOCOL_VERSION, policy_messages
+from qmagent.protocol import PROTOCOL_VERSION, TOOLS_SCHEMA, parse_call, policy_messages
 
 
 def select(rows, limit):
@@ -52,8 +51,11 @@ def main():
     parser.add_argument("--test-file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--prompt-profile", choices=("minimal", "skill"), default="skill")
     args = parser.parse_args()
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
     args.output.mkdir(parents=True, exist_ok=False)
     raw = args.test_file.read_bytes()
     selected = select([json.loads(line) for line in raw.splitlines()], args.limit)
@@ -65,37 +67,49 @@ def main():
         "test_sha256": hashlib.sha256(raw).hexdigest(), "selected_ids": [row["id"] for row in selected],
         "scope": "frozen-context imitation metrics; not closed-loop or hardware success",
         "sampling": "all rows" if not args.limit else "round-robin action-stratified subset",
+        "batch_size": args.batch_size,
         "prompt_profile": args.prompt_profile,
         "system_prompt_sha256": hashlib.sha256(system_prompt.encode()).hexdigest(),
         "tokenizer_sha256": hashlib.sha256((Path(args.model)/"tokenizer_config.json").read_bytes()).hexdigest()}
     (args.output/"config.json").write_text(json.dumps(config, indent=2))
     policy = HuggingFacePolicy(args.model, args.adapter, max_new_tokens=512, decode_backend="hf",
                               trust_remote_code=args.trust_remote_code, prompt_profile=args.prompt_profile)
-    records = []
+    records, generation_seconds = [], 0.0
     with (args.output/"predictions.jsonl").open("x") as stream:
-        for row in selected:
-            expected = row["messages"][-1]["tool_calls"][0]["function"]["arguments"]
-            context = json.loads(row["messages"][1]["content"])
-            # Context has already been compacted: reconstruction must be idempotent.
+        for offset in range(0, len(selected), args.batch_size):
+            batch = selected[offset:offset+args.batch_size]
+            contexts = [json.loads(row["messages"][1]["content"]) for row in batch]
+            message_batches = [policy_messages(context, prompt_profile=args.prompt_profile)
+                               for context in contexts]
+            # Contexts are already compacted: reconstruction must be idempotent.
             before = time.monotonic()
-            try:
-                actual = parse_decision(policy.decide(context))
-                record = {"id": row["id"], "valid": True, "prediction": actual,
-                    "next_tool_correct": actual["next_tool"] == expected["next_tool"],
-                    "arguments_correct": argument_match(actual, expected)}
-            except (ValueError, RuntimeError) as exc:
-                record = {"id": row["id"], "valid": False, "error": str(exc),
-                          "next_tool_correct": False, "arguments_correct": False}
-            record.update(expected=expected, seconds=time.monotonic()-before,
-                          generation=getattr(policy, "last_generation", None))
-            records.append(record)
-            stream.write(json.dumps(record, allow_nan=False)+"\n")
-            stream.flush()
-            print(f"{len(records)}/{len(selected)} valid={record['valid']} next={record['next_tool_correct']}", flush=True)
+            raw_outputs, generation_details = policy._generate_batch(
+                message_batches, policy.max_new_tokens, tools=TOOLS_SCHEMA)
+            batch_seconds = time.monotonic()-before
+            generation_seconds += batch_seconds
+            for row, context, raw, details in zip(batch, contexts, raw_outputs, generation_details):
+                expected = row["messages"][-1]["tool_calls"][0]["function"]["arguments"]
+                try:
+                    actual = parse_call(raw, context=context)
+                    record = {"id": row["id"], "valid": True, "prediction": actual,
+                        "next_tool_correct": actual["next_tool"] == expected["next_tool"],
+                        "arguments_correct": argument_match(actual, expected)}
+                except (ValueError, RuntimeError) as exc:
+                    record = {"id": row["id"], "valid": False, "error": str(exc),
+                              "next_tool_correct": False, "arguments_correct": False}
+                record.update(expected=expected, seconds=details["amortized_seconds"],
+                              generation=details)
+                records.append(record)
+                stream.write(json.dumps(record, allow_nan=False)+"\n")
+                stream.flush()
+                print(f"{len(records)}/{len(selected)} valid={record['valid']} next={record['next_tool_correct']}", flush=True)
     metrics = {"sample_count": len(records), "scope": config["scope"],
         **{key+"_rate": sum(record[key] for record in records)/len(records)
            for key in ("valid", "next_tool_correct", "arguments_correct")},
         "mean_seconds": sum(r["seconds"] for r in records)/len(records),
+        "wall_seconds": generation_seconds,
+        "samples_per_second": len(records)/generation_seconds,
+        "batch_size": args.batch_size,
         "target_counts": dict(Counter(r["expected"]["next_tool"] for r in records)),
         "dataset_sha256": config["test_sha256"], "adapter": args.adapter}
     (args.output/"metrics.json").write_text(json.dumps(metrics, indent=2)+"\n")
