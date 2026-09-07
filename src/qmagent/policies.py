@@ -332,4 +332,11 @@ class HuggingFacePolicy:
                 "batch_size": len(message_batches),
                 "decode_backend": "hf_batch",
             })
+        # Nanbeige's custom forward materializes full-sequence FP32 logits during
+        # prefill. Release inactive CUDA blocks between variable-length batches;
+        # otherwise the caching allocator can strand tens of GiB and fail despite
+        # sufficient aggregate free memory.
+        del generated, encoded
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
         return texts, details
