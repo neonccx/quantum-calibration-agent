@@ -177,6 +177,12 @@ class HuggingFacePolicy:
             from peft import PeftModel
             self.model = PeftModel.from_pretrained(self.model, adapter_path, local_files_only=True)
         self.model.eval()
+        # Nanbeige's remote-code LM head otherwise materializes FP32 logits for
+        # every prompt position. Greedy generation only reads logits[:, -1, :],
+        # so slice the hidden-state sequence at the LM-head boundary. This is an
+        # exact inference optimization and never runs in the training pipeline.
+        self._last_token_logits_hook = self.model.get_output_embeddings().register_forward_pre_hook(
+            self._slice_inference_lm_head_input)
         self.last_generation = None
         if decode_backend not in ("auto", "hf", "cuda_graph"):
             raise ValueError("Invalid decode backend")
@@ -187,6 +193,13 @@ class HuggingFacePolicy:
         if decode_backend == "cuda_graph" and self.graph_reason:
             raise ValueError("CUDA Graph unavailable: " + self.graph_reason)
         self.graph_generator = GraphGenerator(self.model) if self.graph_reason is None else None
+
+    def _slice_inference_lm_head_input(self, module, inputs):
+        hidden = inputs[0]
+        if (not self.model.training and not self.torch.is_grad_enabled()
+                and hidden.ndim == 3 and hidden.shape[1] > 1):
+            return (hidden[:, -1:, :], *inputs[1:])
+        return inputs
 
     def decide(self, context: dict) -> str:
         from .protocol import policy_messages, parse_call, TOOLS_SCHEMA, FIT_TOOL_SCHEMA
@@ -272,6 +285,7 @@ class HuggingFacePolicy:
             "output_token_sha256": hashlib.sha256(json.dumps(suffix, separators=(",", ":")).encode()).hexdigest(),
             "hit_output_limit": bool(len(suffix) >= max_new_tokens and suffix[-1] != self.tokenizer.eos_token_id),
             "seconds": time.monotonic() - started, "decode_backend": backend, **details,
+            "last_token_logits": True,
             **(stream_stats if streamer else {})}
         return self.tokenizer.decode(suffix, skip_special_tokens=True,
                                      **({"clean_up_tokenization_spaces": False} if allow_graph else {})).strip()
@@ -331,6 +345,7 @@ class HuggingFacePolicy:
                 "amortized_seconds": batch_seconds / len(message_batches),
                 "batch_size": len(message_batches),
                 "decode_backend": "hf_batch",
+                "last_token_logits": True,
             })
         # Nanbeige's custom forward materializes full-sequence FP32 logits during
         # prefill. Release inactive CUDA blocks between variable-length batches;
