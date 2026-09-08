@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--test-file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--prompt-profile", choices=("minimal", "skill"), default="skill")
     args = parser.parse_args()
     if args.batch_size < 1:
