@@ -44,7 +44,8 @@ native tool schema, public context, controller and simulator; the run configurat
 Use a new output directory each time. Exit code zero means the evaluation executed without a
 software/contract error; inspect `summary.json` for scientific success or escalation. Add
 `--adapter /absolute/path/to/final_adapter` only for an adapter verified against the active protocol.
-The released v2 adapter predates ZPA2D/XEB and is not claimed compatible with native v3 decisions.
+The v3-compatible adapter is published in the training repository's
+[v0.2.0 release](https://github.com/neonccx/nanbeige-calibration-sft/releases/tag/v0.2.0).
 
 ## Scientific implementation
 
@@ -73,7 +74,23 @@ evaluate F0/F1, visibility and assignment fidelity. Two independent passing batc
 settings are required. The maximum-visibility threshold is diagnostic only. Wilson intervals are
 reported, but do not silently change the acceptance gate. Gaussian overlap is not SPAM-corrected fidelity.
 
-## Recorded v2 simulation acceptance
+## Recorded v3 model-policy simulation acceptance
+
+The v3 LoRA policy accepted 2/3 fresh-seed simulation episodes; the unmodified base model accepted
+0/3 on the same seeds. The two successful SFT episodes used 13 and 12 experiments and both ended with
+two independent held-out IQ passes. This final six-panel report was regenerated from the saved step-13
+measurement of episode 0 and required to reproduce the controller's recorded gate before export.
+
+![v3 LoRA six-panel held-out IQ discrimination report](docs/assets/evaluation_v3_20260909/iq_report.png)
+
+For this episode: F0 = 0.9824, F1 = 0.9785, visibility = 0.9609, assignment fidelity = 0.9805 and
+SNR amplitude = 3.11. See [`iq_metrics.json`](docs/assets/evaluation_v3_20260909/iq_metrics.json) and
+the training repository's [machine-readable v3 evidence](https://github.com/neonccx/nanbeige-calibration-sft/blob/main/evaluation/public_evidence_v3_20260909.json).
+
+These are simulation results, not hardware validation. One of three SFT episodes ended in a policy
+error, so the result is reported as 2/3 rather than filtered to successful runs.
+
+## Preserved v2 simulation acceptance
 
 The verified fit-update policy accepted all three fresh-seed simulation episodes in nine experiments
 each. The figure below was regenerated from the saved final IQ acquisition for one episode; its
@@ -90,7 +107,7 @@ SNR amplitude = 3.51. The exact machine-readable values and confidence intervals
 
 - [Training project](https://github.com/neonccx/nanbeige-calibration-sft): v2 data, frozen baselines and LoRA training.
 - [v3 physics and protocol](docs/PHYSICS_V3.md): flux-tunable transmon, ZPA2D and XEB-style assumptions.
-- [v3 implementation evidence](docs/V3_EVIDENCE.md): tests, rule closed loops, dataset audit and GPU status.
+- [v3 implementation evidence](docs/V3_EVIDENCE.md): tests, dataset audit, model metrics and closed-loop result.
 - [Research basis](docs/research.md): formulas, validation boundary and QMClaw adoption decisions.
 - [Fit-update protocol](docs/FIT_UPDATE_PROTOCOL.md): deterministic fit arithmetic and model/tool boundary.
 - [Simulation evidence](docs/SIMULATION_EVIDENCE.md): fresh-seed closed-loop results and IQ figure provenance.

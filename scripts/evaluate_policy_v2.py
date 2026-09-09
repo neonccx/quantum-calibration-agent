@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import time
+import datetime
 from collections import Counter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"src"))
@@ -53,10 +54,11 @@ def main():
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--prompt-profile", choices=("minimal", "skill"), default="skill")
+    parser.add_argument("--resume", action="store_true",
+                        help="Append to a verified prediction prefix after interruption")
     args = parser.parse_args()
     if args.batch_size < 1:
         raise ValueError("--batch-size must be positive")
-    args.output.mkdir(parents=True, exist_ok=False)
     raw = args.test_file.read_bytes()
     selected = select([json.loads(line) for line in raw.splitlines()], args.limit)
     if not selected:
@@ -71,12 +73,41 @@ def main():
         "prompt_profile": args.prompt_profile,
         "system_prompt_sha256": hashlib.sha256(system_prompt.encode()).hexdigest(),
         "tokenizer_sha256": hashlib.sha256((Path(args.model)/"tokenizer_config.json").read_bytes()).hexdigest()}
-    (args.output/"config.json").write_text(json.dumps(config, indent=2))
+    records = []
+    if args.resume:
+        config_path = args.output / "config.json"
+        predictions_path = args.output / "predictions.jsonl"
+        if not config_path.is_file() or not predictions_path.is_file():
+            raise ValueError("--resume requires config.json and predictions.jsonl")
+        recorded_config = json.loads(config_path.read_text())
+        immutable_fields = ("protocol", "model", "adapter", "test_sha256", "selected_ids",
+                            "batch_size", "prompt_profile", "system_prompt_sha256",
+                            "tokenizer_sha256")
+        mismatches = [field for field in immutable_fields
+                      if recorded_config.get(field) != config.get(field)]
+        if mismatches:
+            raise ValueError("Resume config mismatch: " + ", ".join(mismatches))
+        records = [json.loads(line) for line in predictions_path.read_text().splitlines()]
+        expected_prefix = config["selected_ids"][:len(records)]
+        if [record.get("id") for record in records] != expected_prefix:
+            raise ValueError("Existing predictions are not the selected-ID prefix")
+        if len(records) >= len(selected):
+            raise ValueError("Evaluation already has all selected predictions")
+        with (args.output / "resume_history.jsonl").open("a") as history:
+            history.write(json.dumps({
+                "resumed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "completed_prefix": len(records),
+                "remaining": len(selected) - len(records),
+            }) + "\n")
+    else:
+        args.output.mkdir(parents=True, exist_ok=False)
+        (args.output/"config.json").write_text(json.dumps(config, indent=2))
     policy = HuggingFacePolicy(args.model, args.adapter, max_new_tokens=512, decode_backend="hf",
                               trust_remote_code=args.trust_remote_code, prompt_profile=args.prompt_profile)
-    records, generation_seconds = [], 0.0
-    with (args.output/"predictions.jsonl").open("x") as stream:
-        for offset in range(0, len(selected), args.batch_size):
+    generation_seconds = sum(record.get("seconds", 0.0) for record in records)
+    stream_mode = "a" if args.resume else "x"
+    with (args.output/"predictions.jsonl").open(stream_mode) as stream:
+        for offset in range(len(records), len(selected), args.batch_size):
             batch = selected[offset:offset+args.batch_size]
             contexts = [json.loads(row["messages"][1]["content"]) for row in batch]
             message_batches = [policy_messages(context, prompt_profile=args.prompt_profile)
